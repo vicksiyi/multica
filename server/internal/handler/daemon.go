@@ -579,6 +579,30 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *Handler) requireDaemonRuntimeClaimOwnership(w http.ResponseWriter, r *http.Request, runtime db.AgentRuntime) bool {
+	requestDaemonID := strings.TrimSpace(middleware.DaemonIDFromContext(r.Context()))
+	runtimeDaemonID := strings.TrimSpace(runtime.DaemonID.String)
+	if requestDaemonID == "" || runtimeDaemonID == "" || !runtime.DaemonID.Valid {
+		return true
+	}
+	if strings.EqualFold(requestDaemonID, runtimeDaemonID) {
+		return true
+	}
+
+	slog.Warn("task claim rejected: daemon does not own runtime",
+		"runtime_id", uuidToString(runtime.ID),
+		"workspace_id", uuidToString(runtime.WorkspaceID),
+		"runtime_daemon_id", runtimeDaemonID,
+		"request_daemon_id", requestDaemonID,
+		"auth_path", middleware.DaemonAuthPathFromContext(r.Context()))
+	writeError(w, http.StatusConflict, fmt.Sprintf(
+		"runtime is registered to daemon_id %q, but this request authenticated as daemon_id %q; stop the other local daemon or restart this daemon to re-register",
+		runtimeDaemonID,
+		requestDaemonID,
+	))
+	return false
+}
+
 // mergeLegacyRuntimes folds every runtime row keyed on a prior hostname-derived
 // daemon_id into the newly registered UUID-keyed row. For each legacy id the
 // lookup is case-insensitive and returns *all* matching rows — case-only drift
@@ -1265,6 +1289,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 	runtimeWorkspaceID := uuidToString(runtime.WorkspaceID)
 	authMs = time.Since(start).Milliseconds()
+	if !h.requireDaemonRuntimeClaimOwnership(w, r, runtime) {
+		outcome = "daemon_owner_mismatch"
+		return
+	}
 
 	claimStart := time.Now()
 	task, err := h.TaskService.ClaimTaskForRuntime(r.Context(), parseUUID(runtimeID))

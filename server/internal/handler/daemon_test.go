@@ -190,6 +190,24 @@ func createDispatchedClaimFixtureTask(t *testing.T, ctx context.Context, agentID
 	return taskID
 }
 
+func createQueuedClaimFixtureTask(t *testing.T, ctx context.Context, agentID, runtimeID, issueID string) string {
+	t.Helper()
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority
+		)
+		VALUES ($1, $2, $3, 'queued', 0)
+		RETURNING id
+	`, agentID, runtimeID, issueID).Scan(&taskID); err != nil {
+		t.Fatalf("setup: create queued task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+
+	return taskID
+}
+
 func setTaskPrepareLeaseForTest(t *testing.T, ctx context.Context, taskID, expiresIn string) {
 	t.Helper()
 	if _, err := testPool.Exec(ctx, `
@@ -225,6 +243,87 @@ func claimTaskByRuntimeForTest(t *testing.T, runtimeID string) (*struct {
 		t.Fatalf("decode claim response: %v", err)
 	}
 	return resp.Task, w.Body.String()
+}
+
+func createClaimReclaimRuntimeForDaemon(t *testing.T, ctx context.Context, name, daemonID string) string {
+	t.Helper()
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider,
+			status, device_info, metadata, last_seen_at, visibility, owner_id
+		)
+		VALUES ($1, $2, $3, 'local', 'handler_test_runtime', 'online', 'claim owner fixture', '{}'::jsonb, now(), 'private', $4)
+		RETURNING id
+	`, testWorkspaceID, daemonID, name, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("setup: create daemon-owned runtime: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_runtime WHERE id = $1`, runtimeID) })
+
+	return runtimeID
+}
+
+func TestClaimTaskByRuntime_RejectsMismatchedDaemonID(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntimeForDaemon(t, ctx, "Daemon owner runtime", "owner-daemon")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Daemon owner agent")
+	taskID := createQueuedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID)
+
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
+		testWorkspaceID, "desktop-daemon")
+	req = withURLParam(req, "runtimeId", runtimeID)
+
+	testHandler.ClaimTaskByRuntime(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("ClaimTaskByRuntime: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "owner-daemon") || !strings.Contains(body, "desktop-daemon") {
+		t.Fatalf("conflict response should identify daemon_ids, got %q", body)
+	}
+
+	var status string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status); err != nil {
+		t.Fatalf("read task status: %v", err)
+	}
+	if status != "queued" {
+		t.Fatalf("mismatched daemon must not claim task; status = %q, want queued", status)
+	}
+}
+
+func TestClaimTaskByRuntime_AllowsMatchingDaemonID(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntimeForDaemon(t, ctx, "Matching daemon runtime", "owner-daemon-match")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Matching daemon agent")
+	taskID := createQueuedClaimFixtureTask(t, ctx, agentID, runtimeID, issueID)
+
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil,
+		testWorkspaceID, "OWNER-DAEMON-MATCH")
+	req = withURLParam(req, "runtimeId", runtimeID)
+
+	testHandler.ClaimTaskByRuntime(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Task *struct {
+			ID string `json:"id"`
+		} `json:"task"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Task == nil || resp.Task.ID != taskID {
+		t.Fatalf("claimed task = %#v, want %s", resp.Task, taskID)
+	}
 }
 
 func TestClaimTaskByRuntime_ReclaimsStaleDispatchedTask(t *testing.T) {

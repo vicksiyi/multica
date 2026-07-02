@@ -385,6 +385,11 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	// Set by the Electron Desktop app when it spawns the CLI so the server
 	// can mark those runtimes as "managed" and hide CLI self-update UI.
 	cfg.LaunchedBy = os.Getenv("MULTICA_LAUNCHED_BY")
+	machineLock, err := daemon.AcquireMachineLock(cfg)
+	if err != nil {
+		return err
+	}
+	defer machineLock.Release()
 
 	ctx, stop := notifyShutdownContext(context.Background())
 	defer stop()
@@ -415,6 +420,9 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	// Check if the daemon needs to restart after a CLI update.
 	if restartBin := d.RestartBinary(); restartBin != "" {
 		logger.Info("restarting daemon with updated binary", "path", restartBin)
+		if err := machineLock.Release(); err != nil {
+			return err
+		}
 
 		args := buildDaemonStartArgs(cmd)
 		child := exec.Command(restartBin, args...)
