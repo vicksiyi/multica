@@ -1400,6 +1400,65 @@ func TestHermesBackendAttributesUsageToACPDefaultModel(t *testing.T) {
 	}
 }
 
+func fakeHermesACPHangingSessionNewScript() string {
+	return `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      sleep 60
+      ;;
+  esac
+done
+`
+}
+
+func TestHermesBackendTimesOutHangingSessionNewWithoutRunDeadline(t *testing.T) {
+	// Not t.Parallel(): this test mutates hermesSessionSetupTimeoutNanos.
+	hermesSessionSetupTimeoutNanos.Store(int64(time.Second))
+	t.Cleanup(func() { hermesSessionSetupTimeoutNanos.Store(0) })
+
+	fakePath := filepath.Join(t.TempDir(), "hermes")
+	writeTestExecutable(t, fakePath, []byte(fakeHermesACPHangingSessionNewScript()))
+
+	backend, err := New("hermes", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new hermes backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
+		Timeout: 0,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	select {
+	case result, ok := <-session.Result:
+		if !ok {
+			t.Fatal("result channel closed without a value")
+		}
+		if result.Status != "timeout" {
+			t.Fatalf("expected timeout result, got %q: %s", result.Status, result.Error)
+		}
+		if !strings.Contains(result.Error, "hermes session/new timed out after") {
+			t.Fatalf("expected session/new setup timeout error, got %q", result.Error)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+}
+
 // fakeHermesACPRateLimitScript impersonates hermes for the GitHub
 // multica#1952 scenario: the upstream LLM returns HTTP 429 (rate
 // limited / no credit), hermes retries internally and ultimately
