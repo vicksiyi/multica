@@ -1126,34 +1126,62 @@ func (q *Queries) CreateAgent(ctx context.Context, arg CreateAgentParams) (Agent
 }
 
 const createAgentTask = `-- name: CreateAgentTask :one
-INSERT INTO agent_task_queue (
-    agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
-    trigger_summary, force_fresh_session, is_leader_task, handoff_note,
-    squad_id, context, originator_user_id, runtime_mcp_overlay, runtime_connected_apps
+WITH enqueue_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended(
+        $1::uuid::text || ':' || $2::uuid::text || ':' || COALESCE($3::text, ''),
+        0
+    ))
+),
+existing AS (
+    SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps
+    FROM enqueue_lock, agent_task_queue atq
+    WHERE atq.issue_id = $2::uuid
+      AND atq.agent_id = $1::uuid
+      AND atq.status IN ('queued', 'dispatched')
+      AND (
+        COALESCE($3::text, '') = ''
+        OR atq.context->>'head_sha' = $3::text
+      )
+    ORDER BY atq.created_at ASC, atq.id ASC
+    LIMIT 1
+),
+inserted AS (
+    INSERT INTO agent_task_queue (
+        agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
+        trigger_summary, force_fresh_session, is_leader_task, handoff_note,
+        squad_id, context, originator_user_id, runtime_mcp_overlay, runtime_connected_apps
+    )
+    SELECT
+        $1::uuid, $4, $2::uuid, 'queued', $5,
+        $6,
+        $7,
+        COALESCE($8::boolean, FALSE),
+        COALESCE($9::boolean, FALSE),
+        $10,
+        $11,
+        CASE
+            WHEN COALESCE($3::text, '') <> ''
+            THEN jsonb_build_object('head_sha', $3::text)
+            ELSE NULL
+        END,
+        $12,
+        $13,
+        $14
+    FROM enqueue_lock
+    WHERE NOT EXISTS (SELECT 1 FROM existing)
+    RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps
 )
-VALUES (
-    $1, $2, $3, 'queued', $4, $5,
-    $6,
-    COALESCE($7::boolean, FALSE),
-    COALESCE($8::boolean, FALSE),
-    $9,
-    $10,
-    CASE
-        WHEN COALESCE($11::text, '') <> ''
-        THEN jsonb_build_object('head_sha', $11::text)
-        ELSE NULL
-    END,
-    $12,
-    $13,
-    $14
-)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps FROM inserted
+UNION ALL
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps FROM existing
+LIMIT 1
 `
 
 type CreateAgentTaskParams struct {
 	AgentID              pgtype.UUID `json:"agent_id"`
-	RuntimeID            pgtype.UUID `json:"runtime_id"`
 	IssueID              pgtype.UUID `json:"issue_id"`
+	HeadSha              pgtype.Text `json:"head_sha"`
+	RuntimeID            pgtype.UUID `json:"runtime_id"`
 	Priority             int32       `json:"priority"`
 	TriggerCommentID     pgtype.UUID `json:"trigger_comment_id"`
 	TriggerSummary       pgtype.Text `json:"trigger_summary"`
@@ -1161,10 +1189,47 @@ type CreateAgentTaskParams struct {
 	IsLeaderTask         pgtype.Bool `json:"is_leader_task"`
 	HandoffNote          pgtype.Text `json:"handoff_note"`
 	SquadID              pgtype.UUID `json:"squad_id"`
-	HeadSha              pgtype.Text `json:"head_sha"`
 	OriginatorUserID     pgtype.UUID `json:"originator_user_id"`
 	RuntimeMcpOverlay    []byte      `json:"runtime_mcp_overlay"`
 	RuntimeConnectedApps []byte      `json:"runtime_connected_apps"`
+}
+
+type CreateAgentTaskRow struct {
+	ID                    pgtype.UUID        `json:"id"`
+	AgentID               pgtype.UUID        `json:"agent_id"`
+	IssueID               pgtype.UUID        `json:"issue_id"`
+	Status                string             `json:"status"`
+	Priority              int32              `json:"priority"`
+	DispatchedAt          pgtype.Timestamptz `json:"dispatched_at"`
+	StartedAt             pgtype.Timestamptz `json:"started_at"`
+	CompletedAt           pgtype.Timestamptz `json:"completed_at"`
+	Result                []byte             `json:"result"`
+	Error                 pgtype.Text        `json:"error"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	Context               []byte             `json:"context"`
+	RuntimeID             pgtype.UUID        `json:"runtime_id"`
+	SessionID             pgtype.Text        `json:"session_id"`
+	WorkDir               pgtype.Text        `json:"work_dir"`
+	TriggerCommentID      pgtype.UUID        `json:"trigger_comment_id"`
+	ChatSessionID         pgtype.UUID        `json:"chat_session_id"`
+	AutopilotRunID        pgtype.UUID        `json:"autopilot_run_id"`
+	Attempt               int32              `json:"attempt"`
+	MaxAttempts           int32              `json:"max_attempts"`
+	ParentTaskID          pgtype.UUID        `json:"parent_task_id"`
+	FailureReason         pgtype.Text        `json:"failure_reason"`
+	TriggerSummary        pgtype.Text        `json:"trigger_summary"`
+	ForceFreshSession     bool               `json:"force_fresh_session"`
+	IsLeaderTask          bool               `json:"is_leader_task"`
+	WaitReason            pgtype.Text        `json:"wait_reason"`
+	InitiatorUserID       pgtype.UUID        `json:"initiator_user_id"`
+	HandoffNote           pgtype.Text        `json:"handoff_note"`
+	PrepareLeaseExpiresAt pgtype.Timestamptz `json:"prepare_lease_expires_at"`
+	SquadID               pgtype.UUID        `json:"squad_id"`
+	RuntimeMcpOverlay     []byte             `json:"runtime_mcp_overlay"`
+	EscalationForTaskID   pgtype.UUID        `json:"escalation_for_task_id"`
+	FireAt                pgtype.Timestamptz `json:"fire_at"`
+	OriginatorUserID      pgtype.UUID        `json:"originator_user_id"`
+	RuntimeConnectedApps  []byte             `json:"runtime_connected_apps"`
 }
 
 // head_sha stamps the commit under review into the task's context JSONB so the
@@ -1174,11 +1239,18 @@ type CreateAgentTaskParams struct {
 // issues with no linked PR. Issue-linked tasks never hit quick-create context
 // parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 // key rides harmlessly alongside.
-func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams) (AgentTaskQueue, error) {
+//
+// The advisory lock makes the pending-task dedup atomic without adding a
+// partial unique index over mutable task status. Concurrent comment @mentions
+// for the same (issue, agent, head_sha) serialize: one inserts, the rest return
+// that existing queued/dispatched row. Running tasks are intentionally not
+// coalesced, preserving the "agent picks up a follow-up after this run" path.
+func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams) (CreateAgentTaskRow, error) {
 	row := q.db.QueryRow(ctx, createAgentTask,
 		arg.AgentID,
-		arg.RuntimeID,
 		arg.IssueID,
+		arg.HeadSha,
+		arg.RuntimeID,
 		arg.Priority,
 		arg.TriggerCommentID,
 		arg.TriggerSummary,
@@ -1186,12 +1258,11 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.IsLeaderTask,
 		arg.HandoffNote,
 		arg.SquadID,
-		arg.HeadSha,
 		arg.OriginatorUserID,
 		arg.RuntimeMcpOverlay,
 		arg.RuntimeConnectedApps,
 	)
-	var i AgentTaskQueue
+	var i CreateAgentTaskRow
 	err := row.Scan(
 		&i.ID,
 		&i.AgentID,

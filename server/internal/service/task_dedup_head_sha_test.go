@@ -260,6 +260,97 @@ func TestHeadShaDedup_SameShaStillDedups(t *testing.T) {
 	}
 }
 
+func TestCreateAgentTask_CoalescesPendingSameHead(t *testing.T) {
+	ctx := context.Background()
+	pool := newHeadShaDedupPool(t)
+	q := db.New(pool)
+	fx := createHeadShaDedupFixture(t, ctx, pool, shaA, "open")
+
+	first, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		AgentID:   fx.agentID,
+		RuntimeID: fx.runtimeID,
+		IssueID:   fx.issueID,
+		Priority:  0,
+		HeadSha:   pgtype.Text{String: shaA, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("first CreateAgentTask: %v", err)
+	}
+	second, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		AgentID:   fx.agentID,
+		RuntimeID: fx.runtimeID,
+		IssueID:   fx.issueID,
+		Priority:  0,
+		HeadSha:   pgtype.Text{String: shaA, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("second CreateAgentTask: %v", err)
+	}
+	if util.UUIDToString(second.ID) != util.UUIDToString(first.ID) {
+		t.Fatalf("second CreateAgentTask returned task %s, want existing pending task %s", util.UUIDToString(second.ID), util.UUIDToString(first.ID))
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched')
+	`, fx.issueID, fx.agentID).Scan(&count); err != nil {
+		t.Fatalf("count pending tasks: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("pending task count = %d, want 1", count)
+	}
+}
+
+func TestCreateAgentTask_RunningTaskAllowsFollowup(t *testing.T) {
+	ctx := context.Background()
+	pool := newHeadShaDedupPool(t)
+	q := db.New(pool)
+	fx := createHeadShaDedupFixture(t, ctx, pool, shaA, "open")
+
+	first, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		AgentID:   fx.agentID,
+		RuntimeID: fx.runtimeID,
+		IssueID:   fx.issueID,
+		Priority:  0,
+		HeadSha:   pgtype.Text{String: shaA, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("first CreateAgentTask: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'running', started_at = now()
+		WHERE id = $1
+	`, first.ID); err != nil {
+		t.Fatalf("mark first task running: %v", err)
+	}
+
+	second, err := q.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+		AgentID:   fx.agentID,
+		RuntimeID: fx.runtimeID,
+		IssueID:   fx.issueID,
+		Priority:  0,
+		HeadSha:   pgtype.Text{String: shaA, Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("second CreateAgentTask: %v", err)
+	}
+	if util.UUIDToString(second.ID) == util.UUIDToString(first.ID) {
+		t.Fatalf("second CreateAgentTask reused running task %s; want a follow-up queued task", util.UUIDToString(first.ID))
+	}
+
+	var queued int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'
+	`, fx.issueID, fx.agentID).Scan(&queued); err != nil {
+		t.Fatalf("count queued follow-up tasks: %v", err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued follow-up count = %d, want 1", queued)
+	}
+}
+
 // Behavior 4 (fall-back safety): an issue with no linked PR has no review SHA,
 // so dedup falls back to the pre-TEN-356 (issue_id, agent_id) key and keeps
 // coalescing exactly as before.

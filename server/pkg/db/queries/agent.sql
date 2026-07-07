@@ -167,28 +167,61 @@ ORDER BY created_at DESC;
 -- issues with no linked PR. Issue-linked tasks never hit quick-create context
 -- parsing (parseQuickCreateContext short-circuits on IssueID.Valid), so this
 -- key rides harmlessly alongside.
-INSERT INTO agent_task_queue (
-    agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
-    trigger_summary, force_fresh_session, is_leader_task, handoff_note,
-    squad_id, context, originator_user_id, runtime_mcp_overlay, runtime_connected_apps
+--
+-- The advisory lock makes the pending-task dedup atomic without adding a
+-- partial unique index over mutable task status. Concurrent comment @mentions
+-- for the same (issue, agent, head_sha) serialize: one inserts, the rest return
+-- that existing queued/dispatched row. Running tasks are intentionally not
+-- coalesced, preserving the "agent picks up a follow-up after this run" path.
+WITH enqueue_lock AS MATERIALIZED (
+    SELECT pg_advisory_xact_lock(hashtextextended(
+        sqlc.arg(agent_id)::uuid::text || ':' || sqlc.arg(issue_id)::uuid::text || ':' || COALESCE(sqlc.narg('head_sha')::text, ''),
+        0
+    ))
+),
+existing AS (
+    SELECT atq.*
+    FROM enqueue_lock, agent_task_queue atq
+    WHERE atq.issue_id = sqlc.arg(issue_id)::uuid
+      AND atq.agent_id = sqlc.arg(agent_id)::uuid
+      AND atq.status IN ('queued', 'dispatched')
+      AND (
+        COALESCE(sqlc.narg('head_sha')::text, '') = ''
+        OR atq.context->>'head_sha' = sqlc.narg('head_sha')::text
+      )
+    ORDER BY atq.created_at ASC, atq.id ASC
+    LIMIT 1
+),
+inserted AS (
+    INSERT INTO agent_task_queue (
+        agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
+        trigger_summary, force_fresh_session, is_leader_task, handoff_note,
+        squad_id, context, originator_user_id, runtime_mcp_overlay, runtime_connected_apps
+    )
+    SELECT
+        sqlc.arg(agent_id)::uuid, @runtime_id, sqlc.arg(issue_id)::uuid, 'queued', @priority,
+        sqlc.narg(trigger_comment_id),
+        sqlc.narg(trigger_summary),
+        COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
+        COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
+        sqlc.narg(handoff_note),
+        sqlc.narg(squad_id),
+        CASE
+            WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
+            THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
+            ELSE NULL
+        END,
+        sqlc.narg(originator_user_id),
+        sqlc.narg(runtime_mcp_overlay),
+        sqlc.narg(runtime_connected_apps)
+    FROM enqueue_lock
+    WHERE NOT EXISTS (SELECT 1 FROM existing)
+    RETURNING *
 )
-VALUES (
-    $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
-    sqlc.narg(trigger_summary),
-    COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
-    COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
-    sqlc.narg(handoff_note),
-    sqlc.narg(squad_id),
-    CASE
-        WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
-        THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
-        ELSE NULL
-    END,
-    sqlc.narg(originator_user_id),
-    sqlc.narg(runtime_mcp_overlay),
-    sqlc.narg(runtime_connected_apps)
-)
-RETURNING *;
+SELECT * FROM inserted
+UNION ALL
+SELECT * FROM existing
+LIMIT 1;
 
 -- name: CreateQuickCreateTask :one
 -- Quick-create tasks have no issue / chat / autopilot link; the entire job

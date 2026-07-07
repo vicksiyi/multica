@@ -645,6 +645,46 @@ func headShaText(sha string) pgtype.Text {
 	return pgtype.Text{String: sha, Valid: sha != ""}
 }
 
+func agentTaskQueueFromCreateRow(row db.CreateAgentTaskRow) db.AgentTaskQueue {
+	return db.AgentTaskQueue{
+		ID:                    row.ID,
+		AgentID:               row.AgentID,
+		IssueID:               row.IssueID,
+		Status:                row.Status,
+		Priority:              row.Priority,
+		DispatchedAt:          row.DispatchedAt,
+		StartedAt:             row.StartedAt,
+		CompletedAt:           row.CompletedAt,
+		Result:                row.Result,
+		Error:                 row.Error,
+		CreatedAt:             row.CreatedAt,
+		Context:               row.Context,
+		RuntimeID:             row.RuntimeID,
+		SessionID:             row.SessionID,
+		WorkDir:               row.WorkDir,
+		TriggerCommentID:      row.TriggerCommentID,
+		ChatSessionID:         row.ChatSessionID,
+		AutopilotRunID:        row.AutopilotRunID,
+		Attempt:               row.Attempt,
+		MaxAttempts:           row.MaxAttempts,
+		ParentTaskID:          row.ParentTaskID,
+		FailureReason:         row.FailureReason,
+		TriggerSummary:        row.TriggerSummary,
+		ForceFreshSession:     row.ForceFreshSession,
+		IsLeaderTask:          row.IsLeaderTask,
+		WaitReason:            row.WaitReason,
+		InitiatorUserID:       row.InitiatorUserID,
+		HandoffNote:           row.HandoffNote,
+		PrepareLeaseExpiresAt: row.PrepareLeaseExpiresAt,
+		SquadID:               row.SquadID,
+		RuntimeMcpOverlay:     row.RuntimeMcpOverlay,
+		EscalationForTaskID:   row.EscalationForTaskID,
+		FireAt:                row.FireAt,
+		OriginatorUserID:      row.OriginatorUserID,
+		RuntimeConnectedApps:  row.RuntimeConnectedApps,
+	}
+}
+
 // ResolveIssueReviewSHAParam is ResolveIssueReviewSHA wrapped as the pgtype.Text
 // the dedup queries take, so both service- and handler-package call sites can
 // key dedup on the reviewed head with a single call (TEN-356).
@@ -674,7 +714,7 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 
 	originatorUserID := s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+	taskRow, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:              issue.AssigneeID,
 		RuntimeID:            agent.RuntimeID,
 		IssueID:              issue.ID,
@@ -694,6 +734,7 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
+	task := agentTaskQueueFromCreateRow(taskRow)
 
 	slog.Info("task enqueued",
 		"task_id", util.UUIDToString(task.ID),
@@ -764,7 +805,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 
 	originatorUserID := s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
 	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+	taskRow, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:              agentID,
 		RuntimeID:            agent.RuntimeID,
 		IssueID:              issue.ID,
@@ -786,6 +827,7 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
+	task := agentTaskQueueFromCreateRow(taskRow)
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
 	// See EnqueueTaskForIssue for ordering rationale.
