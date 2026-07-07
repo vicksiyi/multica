@@ -46,7 +46,16 @@ WHERE id = $1
 RETURNING issue_counter;
 
 -- name: DeleteWorkspace :exec
-WITH deleted_pending_check_suites AS (
+WITH deleted_agent_invocation_targets AS (
+    DELETE FROM agent_invocation_target ait
+    USING agent a
+    WHERE ait.agent_id = a.id
+      AND a.workspace_id = $1
+), deleted_squads AS (
+    DELETE FROM squad WHERE workspace_id = $1
+), deleted_agents AS (
+    DELETE FROM agent WHERE workspace_id = $1
+), deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE id = $1;

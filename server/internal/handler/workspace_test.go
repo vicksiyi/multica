@@ -236,6 +236,130 @@ VALUES ($1, 123456789, 'multica-ai', 'multica', 3366, 987654321, 'abc123', 15368
 	}
 }
 
+// TestDeleteWorkspace_FirstWorkspaceWithRuntimeAgentSucceeds covers the user
+// path from #5015: after creating a second workspace, deleting the original
+// workspace must still work even when the original contains onboarding-era
+// runtime/agent/squad rows. Those rows have restrictive or app-managed
+// relationships, so DeleteWorkspace must clear them before deleting the
+// workspace row.
+func TestDeleteWorkspace_FirstWorkspaceWithRuntimeAgentSucceeds(t *testing.T) {
+	ctx := context.Background()
+
+	const firstSlug = "handler-tests-delete-first-runtime"
+	const secondSlug = "handler-tests-delete-first-runtime-second"
+	_, _ = testPool.Exec(ctx, `DELETE FROM workspace WHERE slug IN ($1, $2)`, firstSlug, secondSlug)
+
+	var firstWSID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO workspace (name, slug, description, issue_prefix)
+VALUES ($1, $2, $3, $4)
+RETURNING id
+`, "First Runtime Delete", firstSlug, "original workspace with runtime-backed content", "FIR").Scan(&firstWSID); err != nil {
+		t.Fatalf("create first workspace: %v", err)
+	}
+
+	var secondWSID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO workspace (name, slug, description, issue_prefix)
+VALUES ($1, $2, $3, $4)
+RETURNING id
+`, "Second Runtime Delete", secondSlug, "second workspace should survive", "SEC").Scan(&secondWSID); err != nil {
+		t.Fatalf("create second workspace: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id IN ($1, $2)`, firstWSID, secondWSID)
+	})
+
+	for _, wsID := range []string{firstWSID, secondWSID} {
+		if _, err := testPool.Exec(ctx, `
+INSERT INTO member (workspace_id, user_id, role)
+VALUES ($1, $2, 'owner')
+`, wsID, testUserID); err != nil {
+			t.Fatalf("create owner member for workspace %s: %v", wsID, err)
+		}
+	}
+
+	var runtimeID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_runtime (
+    workspace_id, daemon_id, name, runtime_mode, provider, status,
+    device_info, metadata, owner_id, last_seen_at
+)
+VALUES ($1, 'daemon-delete-first-runtime', 'First Runtime', 'local', 'multica_daemon', 'online', '', '{}'::jsonb, $2, now())
+RETURNING id
+`, firstWSID, testUserID).Scan(&runtimeID); err != nil {
+		t.Fatalf("insert runtime: %v", err)
+	}
+
+	var agentID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO agent (
+    workspace_id, name, description, runtime_mode, runtime_config,
+    runtime_id, visibility, permission_mode, max_concurrent_tasks, owner_id
+)
+VALUES ($1, 'First Runtime Agent', '', 'local', '{}'::jsonb, $2, 'workspace', 'public_to', 1, $3)
+RETURNING id
+`, firstWSID, runtimeID, testUserID).Scan(&agentID); err != nil {
+		t.Fatalf("insert agent: %v", err)
+	}
+
+	var squadID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+VALUES ($1, 'First Runtime Squad', '', $2, $3)
+RETURNING id
+`, firstWSID, agentID, testUserID).Scan(&squadID); err != nil {
+		t.Fatalf("insert squad: %v", err)
+	}
+
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO agent_invocation_target (agent_id, target_type, target_id, created_by)
+VALUES ($1, 'workspace', $2, $3)
+`, agentID, firstWSID, testUserID); err != nil {
+		t.Fatalf("insert invocation target: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req := newRequest("DELETE", "/api/workspaces/"+firstWSID, nil)
+	req = withURLParam(req, "id", firstWSID)
+	testHandler.DeleteWorkspace(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace: expected 204, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var firstExists bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, firstWSID).Scan(&firstExists); err != nil {
+		t.Fatalf("verify first workspace: %v", err)
+	}
+	if firstExists {
+		t.Fatal("first workspace still exists after DELETE")
+	}
+
+	var secondExists bool
+	if err := testPool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, secondWSID).Scan(&secondExists); err != nil {
+		t.Fatalf("verify second workspace: %v", err)
+	}
+	if !secondExists {
+		t.Fatal("second workspace was deleted with the first workspace")
+	}
+
+	var leftoverCount int
+	if err := testPool.QueryRow(ctx, `
+SELECT
+  (SELECT count(*) FROM agent_runtime WHERE id = $1) +
+  (SELECT count(*) FROM agent WHERE id = $2) +
+  (SELECT count(*) FROM squad WHERE id = $3) +
+  (SELECT count(*) FROM agent_invocation_target WHERE agent_id = $2)
+`, runtimeID, agentID, squadID).Scan(&leftoverCount); err != nil {
+		t.Fatalf("verify workspace-local rows: %v", err)
+	}
+	if leftoverCount != 0 {
+		t.Fatalf("workspace-local runtime/agent/squad rows were not fully removed: %d", leftoverCount)
+	}
+}
+
 // TestUpdateWorkspace_AvatarURL covers the avatar_url field added to
 // UpdateWorkspaceRequest: a PATCH with avatar_url is persisted and surfaced
 // back on the response, and partial updates leave other fields untouched.
