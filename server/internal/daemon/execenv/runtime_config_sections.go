@@ -244,6 +244,14 @@ func writeRepositories(b *strings.Builder, ctx TaskContextForEnv) {
 		return
 	}
 	b.WriteString("## Repositories\n\n")
+	if ctx.AutoCheckoutRepoRoot != "" {
+		fmt.Fprintf(b, "The single repository for this task is already checked out and this runtime starts in its git root: `%s`.\n\n", ctx.AutoCheckoutRepoRoot)
+		if ctx.AutoCheckoutRepoURL != "" {
+			fmt.Fprintf(b, "- %s\n", ctx.AutoCheckoutRepoURL)
+		}
+		b.WriteString("\nDo not run `multica repo checkout` again unless the task explicitly asks for a separate checkout.\n\n")
+		return
+	}
 	b.WriteString("Available in this workspace — `multica repo checkout <url> [--ref <branch-or-sha>]` to fetch (creates a git worktree on a dedicated branch).\n\n")
 	for _, repo := range ctx.Repos {
 		if repo.Description != "" {
@@ -276,7 +284,11 @@ func writeProjectContext(b *strings.Builder, ctx TaskContextForEnv) {
 			fmt.Fprintf(b, "- %s\n", formatProjectResource(r))
 		}
 		b.WriteString("\nResources are pointers — open them only when relevant to the task. ")
-		b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+		if ctx.AutoCheckoutRepoRoot != "" {
+			b.WriteString("The task's single `github_repo` resource has already been checked out and the runtime starts in that git root.\n\n")
+		} else {
+			b.WriteString("For `github_repo` resources, use `multica repo checkout <url>` to fetch the code. Add `--ref <branch-or-sha>` when a task or handoff names an exact revision.\n\n")
+		}
 	} else {
 		b.WriteString("This project has no resources attached yet.\n\n")
 	}

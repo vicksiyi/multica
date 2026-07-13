@@ -291,6 +291,51 @@ func TestProjectReposReplaceWorkspaceReposInMetaSkill(t *testing.T) {
 	}
 }
 
+func TestInjectRuntimeConfigAutoCheckoutRepo(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	repoURL := "https://github.com/org/project-repo"
+	repoRoot := filepath.Join(dir, "project-repo")
+	ctx := TaskContextForEnv{
+		IssueID: "11111111-2222-3333-4444-555555555555",
+		Repos: []RepoContextForEnv{
+			{URL: repoURL},
+		},
+		AutoCheckoutRepoURL:  repoURL,
+		AutoCheckoutRepoRoot: repoRoot,
+		ProjectID:            "22222222-3333-4444-5555-666666666666",
+		ProjectResources: []ProjectResourceForEnv{
+			{
+				ID:           "33333333-4444-5555-6666-777777777777",
+				ResourceType: "github_repo",
+				ResourceRef:  []byte(`{"url":"https://github.com/org/project-repo"}`),
+			},
+		},
+	}
+	if _, err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	s := string(content)
+	for _, want := range []string{
+		"already checked out",
+		repoRoot,
+		"Do not run `multica repo checkout` again",
+		"The task's single `github_repo` resource has already been checked out",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("AGENTS.md missing %q", want)
+		}
+	}
+	if strings.Contains(s, "For `github_repo` resources, use `multica repo checkout") {
+		t.Errorf("AGENTS.md should not tell auto-checkout tasks to run repo checkout")
+	}
+}
+
 func TestWriteProjectResourcesSkippedWhenNone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

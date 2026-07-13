@@ -1340,6 +1340,58 @@ func (d *Daemon) taskRepoDefaultRef(workspaceID, taskID, repoURL string) string 
 	return strings.TrimSpace(ws.taskRepoRefs[taskID][repoURL])
 }
 
+type piGitAuthorityBinding struct {
+	RepoURL  string
+	RepoRoot string
+}
+
+func (d *Daemon) preparePiGitAuthorityRoot(ctx context.Context, task Task, env *execenv.Environment, agentName string) (*piGitAuthorityBinding, error) {
+	if env == nil || env.LocalDirectory || d.repoCache == nil {
+		return nil, nil
+	}
+
+	reposByURL := make(map[string]RepoData, len(task.Repos))
+	for _, repo := range task.Repos {
+		url := strings.TrimSpace(repo.URL)
+		if url == "" {
+			continue
+		}
+		if _, exists := reposByURL[url]; !exists {
+			repo.URL = url
+			reposByURL[url] = repo
+		}
+	}
+	if len(reposByURL) != 1 {
+		return nil, nil
+	}
+
+	var selected RepoData
+	for _, repo := range reposByURL {
+		selected = repo
+	}
+	if err := d.ensureRepoReady(ctx, task.WorkspaceID, selected.URL); err != nil {
+		return nil, err
+	}
+
+	ref := strings.TrimSpace(selected.Ref)
+	if ref == "" {
+		ref = d.taskRepoDefaultRef(task.WorkspaceID, task.ID, selected.URL)
+	}
+	result, err := d.repoCache.CreateWorktree(repocache.WorktreeParams{
+		WorkspaceID:         task.WorkspaceID,
+		RepoURL:             selected.URL,
+		WorkDir:             env.WorkDir,
+		Ref:                 ref,
+		AgentName:           agentName,
+		TaskID:              task.ID,
+		CoAuthoredByEnabled: d.workspaceCoAuthoredByEnabled(task.WorkspaceID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &piGitAuthorityBinding{RepoURL: selected.URL, RepoRoot: result.Path}, nil
+}
+
 func (d *Daemon) clearTaskRepoRefs(workspaceID, taskID string) {
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
@@ -3682,6 +3734,19 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 
 	reused := gateResumeToReusedWorkdir(&task, &taskCtx, env.WorkDir, taskLog)
 
+	execCwd := env.WorkDir
+	if provider == "pi" {
+		binding, bindErr := d.preparePiGitAuthorityRoot(ctx, task, env, agentName)
+		if bindErr != nil {
+			return TaskResult{}, fmt.Errorf("prepare pi git authority root: %w", bindErr)
+		}
+		if binding != nil {
+			execCwd = binding.RepoRoot
+			taskCtx.AutoCheckoutRepoURL = binding.RepoURL
+			taskCtx.AutoCheckoutRepoRoot = binding.RepoRoot
+		}
+	}
+
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
 	runtimeBrief, err := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 	if err != nil {
@@ -3828,6 +3893,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	taskLog.Info("starting agent",
 		"provider", provider,
 		"workdir", env.WorkDir,
+		"exec_cwd", execCwd,
 		"model", entry.Model,
 		"reused", reused,
 	)
@@ -3897,7 +3963,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 	}
 	execOpts := agent.ExecOptions{
-		Cwd:                       env.WorkDir,
+		Cwd:                       execCwd,
 		Model:                     model,
 		ThreadName:                deriveTaskThreadName(task),
 		Timeout:                   d.cfg.AgentTimeout,

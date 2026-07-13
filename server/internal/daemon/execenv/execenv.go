@@ -89,6 +89,8 @@ type TaskContextForEnv struct {
 	AgentInstructions       string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills             []SkillContextForEnv
 	Repos                   []RepoContextForEnv     // workspace repos available for checkout
+	AutoCheckoutRepoURL     string                  // repo URL already checked out before provider launch
+	AutoCheckoutRepoRoot    string                  // absolute git root used as provider cwd
 	ProjectID               string                  // issue's project, when present
 	ProjectTitle            string                  // human-readable project title
 	ProjectDescription      string                  // durable project-level context, rendered into the brief's Project Context section

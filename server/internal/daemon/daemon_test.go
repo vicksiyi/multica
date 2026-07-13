@@ -1922,6 +1922,91 @@ func TestTaskRepoDefaultRefScopedByTask(t *testing.T) {
 	}
 }
 
+func TestPreparePiGitAuthorityRootCreatesSingleRepoWorktree(t *testing.T) {
+	t.Parallel()
+
+	const (
+		workspaceID = "ws-1"
+		taskID      = "task-pi"
+		repoURL     = "https://github.com/example/project"
+	)
+	workDir := t.TempDir()
+	repoRoot := filepath.Join(workDir, "project")
+	cache := &recordingRepoCache{
+		lookupPath:   "/cache/project.git",
+		worktreePath: repoRoot,
+	}
+	d := newRepoCheckoutTestDaemon(t, workspaceID, repoURL, cache)
+	d.registerTaskRepos(workspaceID, taskID, []RepoData{{URL: repoURL, Ref: "release/v2"}})
+	defer d.clearTaskRepoRefs(workspaceID, taskID)
+
+	binding, err := d.preparePiGitAuthorityRoot(context.Background(), Task{
+		ID:          taskID,
+		WorkspaceID: workspaceID,
+		Repos:       []RepoData{{URL: repoURL}},
+	}, &execenv.Environment{WorkDir: workDir}, "Pi Agent")
+	if err != nil {
+		t.Fatalf("preparePiGitAuthorityRoot: %v", err)
+	}
+	if binding == nil {
+		t.Fatal("preparePiGitAuthorityRoot returned nil binding")
+	}
+	if binding.RepoRoot != repoRoot {
+		t.Fatalf("RepoRoot = %q, want %q", binding.RepoRoot, repoRoot)
+	}
+	if binding.RepoURL != repoURL {
+		t.Fatalf("RepoURL = %q, want %q", binding.RepoURL, repoURL)
+	}
+
+	params := cache.lastCreateParams()
+	if params.WorkDir != workDir {
+		t.Fatalf("CreateWorktree WorkDir = %q, want %q", params.WorkDir, workDir)
+	}
+	if params.Ref != "release/v2" {
+		t.Fatalf("CreateWorktree Ref = %q, want release/v2", params.Ref)
+	}
+	if params.AgentName != "Pi Agent" {
+		t.Fatalf("CreateWorktree AgentName = %q, want Pi Agent", params.AgentName)
+	}
+	if params.TaskID != taskID {
+		t.Fatalf("CreateWorktree TaskID = %q, want %q", params.TaskID, taskID)
+	}
+}
+
+func TestPreparePiGitAuthorityRootSkipsAmbiguousRepos(t *testing.T) {
+	t.Parallel()
+
+	const workspaceID = "ws-1"
+	cache := &recordingRepoCache{lookupPath: "/cache/repo.git"}
+	d := &Daemon{
+		workspaces: map[string]*workspaceState{
+			workspaceID: newWorkspaceState(workspaceID, nil, "", []RepoData{
+				{URL: "https://github.com/example/one"},
+				{URL: "https://github.com/example/two"},
+			}, nil),
+		},
+		repoCache: cache,
+	}
+
+	binding, err := d.preparePiGitAuthorityRoot(context.Background(), Task{
+		ID:          "task-pi",
+		WorkspaceID: workspaceID,
+		Repos: []RepoData{
+			{URL: "https://github.com/example/one"},
+			{URL: "https://github.com/example/two"},
+		},
+	}, &execenv.Environment{WorkDir: t.TempDir()}, "Pi Agent")
+	if err != nil {
+		t.Fatalf("preparePiGitAuthorityRoot: %v", err)
+	}
+	if binding != nil {
+		t.Fatalf("binding = %+v, want nil", binding)
+	}
+	if got := cache.lastCreateParams(); got.RepoURL != "" {
+		t.Fatalf("CreateWorktree called for %q, want no checkout", got.RepoURL)
+	}
+}
+
 func TestEnsureRepoReadyReturnsNotConfigured(t *testing.T) {
 	t.Parallel()
 

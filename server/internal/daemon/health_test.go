@@ -333,9 +333,10 @@ func (c *blockingLookupRepoCache) CreateWorktree(repocache.WorktreeParams) (*rep
 }
 
 type recordingRepoCache struct {
-	lookupPath string
-	mu         sync.Mutex
-	params     []repocache.WorktreeParams
+	lookupPath   string
+	worktreePath string
+	mu           sync.Mutex
+	params       []repocache.WorktreeParams
 }
 
 func (c *recordingRepoCache) Lookup(_, _ string) string {
@@ -354,7 +355,11 @@ func (c *recordingRepoCache) CreateWorktree(params repocache.WorktreeParams) (*r
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.params = append(c.params, params)
-	return &repocache.WorktreeResult{Path: params.WorkDir, BranchName: "agent/test"}, nil
+	path := c.worktreePath
+	if path == "" {
+		path = params.WorkDir
+	}
+	return &repocache.WorktreeResult{Path: path, BranchName: "agent/test"}, nil
 }
 
 func (c *recordingRepoCache) lastCreateParams() repocache.WorktreeParams {
