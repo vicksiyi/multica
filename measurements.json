@@ -1,0 +1,76 @@
+{
+  "browser": "153.0.8010.50",
+  "platform": "darwin",
+  "results": [
+    {
+      "revision": "before",
+      "state": "active",
+      "seconds": 5.002188999999817,
+      "mainThreadBusyPercent": 11.314526500298584,
+      "paintEvents": 600,
+      "paintMs": 476.81100000000015,
+      "scriptMs": 0,
+      "animations": [
+        "border-beam-rotate",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-text-shimmer",
+        "chat-impulse"
+      ]
+    },
+    {
+      "revision": "before",
+      "state": "idle",
+      "seconds": 5.003429000000324,
+      "mainThreadBusyPercent": 0.015149610397188628,
+      "paintEvents": 0,
+      "paintMs": 0,
+      "scriptMs": 0,
+      "animations": []
+    },
+    {
+      "revision": "before",
+      "state": "reduced",
+      "seconds": 5.0030360000000655,
+      "mainThreadBusyPercent": 0.01451118880615671,
+      "paintEvents": 0,
+      "paintMs": 0,
+      "scriptMs": 0,
+      "animations": []
+    },
+    {
+      "revision": "after",
+      "state": "active",
+      "seconds": 5.002089000000524,
+      "mainThreadBusyPercent": 0.011635138838991851,
+      "paintEvents": 0,
+      "paintMs": 0,
+      "scriptMs": 0,
+      "animations": []
+    },
+    {
+      "revision": "after",
+      "state": "idle",
+      "seconds": 5.002105000000483,
+      "mainThreadBusyPercent": 0.015793350999227795,
+      "paintEvents": 0,
+      "paintMs": 0,
+      "scriptMs": 0,
+      "animations": []
+    },
+    {
+      "revision": "after",
+      "state": "reduced",
+      "seconds": 5.002964999999676,
+      "mainThreadBusyPercent": 0.01277242595141164,
+      "paintEvents": 0,
+      "paintMs": 0,
+      "scriptMs": 0,
+      "animations": []
+    }
+  ]
+}
