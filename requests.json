@@ -1,0 +1,76 @@
+[
+  {
+    "mode": "before",
+    "platform": "web",
+    "requests": [
+      {
+        "method": "POST",
+        "slug": null,
+        "url": "/api/runtimes/rt-0/models"
+      }
+    ]
+  },
+  {
+    "mode": "before",
+    "platform": "desktop",
+    "requests": [
+      {
+        "method": "POST",
+        "slug": null,
+        "url": "/api/runtimes/rt-0/models"
+      }
+    ]
+  },
+  {
+    "mode": "after",
+    "platform": "web",
+    "requests": [
+      {
+        "method": "POST",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models"
+      },
+      {
+        "method": "GET",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models/req-1"
+      },
+      {
+        "method": "POST",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models?force=true"
+      },
+      {
+        "method": "GET",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models/req-1"
+      }
+    ]
+  },
+  {
+    "mode": "after",
+    "platform": "desktop",
+    "requests": [
+      {
+        "method": "POST",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models"
+      },
+      {
+        "method": "GET",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models/req-1"
+      },
+      {
+        "method": "POST",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models?force=true"
+      },
+      {
+        "method": "GET",
+        "slug": "new-workspace",
+        "url": "/api/runtimes/rt-0/models/req-1"
+      }
+    ]
+  }
+]
